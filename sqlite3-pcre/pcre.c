@@ -9,10 +9,11 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pcre.h>
+
 #include <sqlite3ext.h>
 #include <stdbool.h>
-#include <pthread.h>
+
+#include <regex.h>
 
 SQLITE_EXTENSION_INIT1
 
@@ -20,8 +21,7 @@ static pthread_mutex_t mylock;
 
 typedef struct {
     char *s;
-    pcre *p;
-    pcre_extra *e;
+    regex_t r;
 } cache_entry;
 
 #ifndef CACHE_SIZE
@@ -32,8 +32,8 @@ static
 void regexp(sqlite3_context *ctx, int argc, sqlite3_value **argv)
 {
     const char *re, *str;
-    pcre *p;
-    pcre_extra *e;
+    regex_t *pr;
+    int myflags = REG_EXTENDED;
 
     assert(argc == 2);
 
@@ -76,27 +76,22 @@ void regexp(sqlite3_context *ctx, int argc, sqlite3_value **argv)
 
 	    pthread_mutex_lock(&mylock);
 
-	    c.p = pcre_compile(re, 0, &err, &pos, NULL);
-	    if (!c.p) {
-		char *e2 = sqlite3_mprintf("%s: %s (offset %d)", re, err, pos);
+	    if (regcomp(&c.r, re, myflags) != 0) {
+		char *e2 = sqlite3_mprintf("asdf");
 		sqlite3_result_error(ctx, e2, -1);
 		sqlite3_free(e2);
 		return;
 	    }
-	    c.e = pcre_study(c.p, 0, &err);
 	    c.s = strdup(re);
 	    if (!c.s) {
 		sqlite3_result_error(ctx, "strdup: ENOMEM", -1);
-		pcre_free(c.p);
-		pcre_free(c.e);
+		regfree(&c.r);
 		return;
 	    }
 	    i = CACHE_SIZE - 1;
 	    if (cache[i].s) {
 		free(cache[i].s);
-		assert(cache[i].p);
-		pcre_free(cache[i].p);
-		pcre_free(cache[i].e);
+		regfree(&c.r);
 	    }
 
 	    pthread_mutex_unlock(&mylock);
@@ -104,15 +99,14 @@ void regexp(sqlite3_context *ctx, int argc, sqlite3_value **argv)
 	    memmove(cache + 1, cache, i * sizeof(cache_entry));
 	    cache[0] = c;
 	}
-	p = cache[0].p;
-	e = cache[0].e;
+	pr = &cache[0].r;
     }
 
     {
 	int rc;
 	assert(p);
-	rc = pcre_exec(p, e, str, strlen(str), 0, 0, NULL, 0);
-	sqlite3_result_int(ctx, rc >= 0);
+	rc = regexec(pr, str, 0, 0, 0);
+	sqlite3_result_int(ctx, rc == 0);
 	return;
     }
 }
